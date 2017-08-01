@@ -9,7 +9,7 @@ import json
 from aiohttp import web
 
 from www import markdown2
-from www.apis import APIValueError, APIError, APIPermissionError, Page
+from www.apis import APIValueError, APIError, APIPermissionError, Page, APIResourceNotFoundError
 from www.config import configs
 from www.coroweb import get, post
 from www.models import User, Blog, next_id, Comment
@@ -56,6 +56,12 @@ async def cookie2user(cookie_str):
         return None
 
 
+def check_admin(request):
+    """检测权限"""
+    if request.__user__ is None or not request.__user__.admin:
+        raise APIPermissionError()
+
+
 def get_page_index(page):
         p = 1
         try:
@@ -88,7 +94,7 @@ def get_page_index(page):
 @get('/')
 async def index(*, page='1'):
     page_index = get_page_index(page)
-    num = await Blog.findall('count(id)')
+    num = await Blog.findNumber('count(id)')
     page = Page(num, page_index)
     if num == 0:
         blogs = []
@@ -110,7 +116,7 @@ def text2html(text):
 async def get_blog(id):
     """显示指定id的博客内容和所有评论"""
     blog = await Blog.find(id)
-    comments = await Comment.findall('blog_id=?', [id], orderBy='created_at desc')  # created_at desc 可能SQL无法识别。。。。。。。。。。。。。。。。。。。。。。。。。
+    comments = await Comment.findall('blog_id=?', [id], orderBy='created_at desc')
     for c in comments:
         c.html_content = text2html(c.content)
     blog.html_content = markdown2.markdown(blog.content)
@@ -121,11 +127,33 @@ async def get_blog(id):
     }
 
 
+@get('/manage/')
+def manage():
+    return 'redirect:/manage/comments'
+
+
+@get('/manage/comments')
+def manage_comments(*, page='1'):
+    return {
+        '__template__': 'manage_comments.html',
+        'page_index': get_page_index(page)
+    }
+
+
 @get('/manage/blogs')
 def manage_blogs(*, page='1'):
     """显示博客管理页面"""
     return {
         '__template__': 'manage_blogs.html',
+        'page_index': get_page_index(page)
+    }
+
+
+@get('/manage/users')
+def manage_users(*, page='1'):
+    """显示用户管理页面"""
+    return {
+        '__template__': 'manage_users.html',
         'page_index': get_page_index(page)
     }
 
@@ -139,6 +167,15 @@ def manage_create_blog():
         '__template__': 'manage_blog_edit.html',
         'id': '',
         'action': '/api/blogs'
+    }
+
+
+@get('/manage/blogs/edit')
+def manage_edit_blog(*, id):
+    return {
+        '__template__': 'manage_blog_edit.html',
+        'id': id,
+        'action': '/api/blogs/%s' % id
     }
 
 
@@ -208,9 +245,7 @@ _RE_SHA1 = re.compile(r'^[0-9a-f]{40}$')
 
 @post('/api/users')
 async def api_register_user(*, name, email, passwd):
-    """
-    用户注册验证
-    """
+    """验证注册用户"""
     if not name or not name.strip():
         raise APIValueError('name')
     if not email or not _RE_EMAIL.match(email):
@@ -222,6 +257,8 @@ async def api_register_user(*, name, email, passwd):
         raise APIError('register:failed', 'email', 'Email is already in use.')
     uid = next_id()
     sha1_passwd = '%s:%s' % (uid, passwd)
+    # 默认注册为非管理员，管理员需要设置默认字段admin为True
+    # user = User(id=uid, name=name.strip(), admin=True, email=email, passwd=hashlib.sha1(sha1_passwd.encode('utf-8')).hexdigest(), image='http://www.gravatar.com/avatar/%s?d=mm&s=120' % hashlib.md5(email.encode('utf-8')).hexdigest())
     user = User(id=uid, name=name.strip(), email=email, passwd=hashlib.sha1(sha1_passwd.encode('utf-8')).hexdigest(), image='http://www.gravatar.com/avatar/%s?d=mm&s=120' % hashlib.md5(email.encode('utf-8')).hexdigest())
     await user.save()
     # make session cookie
@@ -233,28 +270,23 @@ async def api_register_user(*, name, email, passwd):
     return r
 
 
-@get('/api/blogs/{id}')
-async def api_get_blog(*, id):
-    """
-    获取指定id的博客
-    """
-    blog = await Blog.find(id)
-    return blog
-
-
-def check_admin(request):
-    """
-    检测权限
-    """
-    if request.__user__ is None or not request.__user__.admin:
-        raise APIPermissionError()
+@get('/api/users')
+async def api_get_users(*, page='1'):
+    """获取数据库中指定页码的用户数据"""
+    page_index = get_page_index(page)
+    num = await User.findNumber('count(id)')
+    p = Page(num, page_index)
+    if num == 0:
+        return dict(page=p, users=())
+    users = await User.findall(orderBy='created_at desc', limit=(p.offset, p.limit))
+    for u in users:
+        u.passwd = '*' * 6
+    return dict(page=p, users=users)
 
 
 @post('/api/blogs')
 async def api_create_blog(request, *, name, summary, content):
-    """
-    创建博客
-    """
+    """创建博客"""
     check_admin(request)
     if not name or not name.strip():
         raise APIValueError('name', 'name cannot be empty.')
@@ -269,25 +301,89 @@ async def api_create_blog(request, *, name, summary, content):
 
 @get('/api/blogs')
 async def api_blogs(*, page='1'):
-    """
-    分页显示博客列表
-    """
+    """获取数据库中指定页码的博客数据"""
     try:
         page_index = int(page)
     except ValueError as e:
         page_index = 1
-    num = await Blog.findall('count(id)')
+    num = await Blog.findNumber('count(id)')
     p = Page(num, page_index)
     if num == 0:
         return dict(page=p, blogs=())
-    blogs = await Blog.findall(orderBy='created_at desc', limit=(p.offset, p.limit))  # limit应用在分页获取上。。。。。。。。。。。。。。。。created_at desc
+    blogs = await Blog.findall(orderBy='created_at desc', limit=(p.offset, p.limit))
     return dict(page=p, blogs=blogs)
 
 
+@get('/api/blogs/{id}')
+async def api_get_blog(*, id):
+    """获取指定id的博客"""
+    blog = await Blog.find(id)
+    return blog
 
 
+@post('/api/blogs/{id}')
+async def api_update_blog(id, request, *, name, summary, content):
+    check_admin(request)
+    blog = await Blog.find(id)
+    if not name or not name.strip():
+        raise APIValueError('name', 'name cannot be empty.')
+    if not summary or not summary.strip():
+        raise APIValueError('summary', 'summary cannot be empty.')
+    if not content or not content.strip:
+        raise APIValueError('content', 'content cannot be empty.')
+    blog.name = name.strip()
+    blog.summary = summary.strip()
+    blog.content = content.strip()
+    await blog.update()
+    return blog
 
 
+@post('/api/blogs/{id}/delete')
+async def api_delete_blogs(request, *, id):  # id不一样的参数形式 ？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？
+    """删除指定Blog id的博客"""
+    check_admin(request)
+    blog = await Blog.find(id)
+    await blog.remove()
+    return dict(id=id)
+
+
+@get('/api/comments')
+async def api_comments(*, page='1'):
+    """获取数据库中指定页码的评论数据"""
+    page_index = get_page_index(page)
+    num = await Comment.findNumber('count(id)')
+    p = Page(num, page_index)
+    if num == 0:
+        return dict(page=p, comments=())
+    comments = await Comment.findall(orderBy='created_at desc', limit=(p.offset, p.limit))
+    return dict(page=p, comments=comments)
+
+
+@post('/api/blogs/{id}/comments')
+async def api_create_comment(id, request, *, content):
+    """给指定的Blog id添加评论"""
+    user = request.__user__
+    if user is None:
+        raise APIPermissionError('Please signin first.')
+    if not content or not content.strip():
+        raise APIValueError('content')
+    blog = await Blog.find(id)
+    if blog is None:
+        raise APIResourceNotFoundError('Blog')
+    comment = Comment(blog_id=blog.id, user_id=user.id, user_name=user.name, user_image=user.image, content=content.strip())
+    await comment.save()
+    return comment
+
+
+@post('/api/comments/{id}/delete')
+async def api_delete_comments(id, request):  # 不一样的参数形式 ？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？ {id}是否为模板支持的？？？
+    """删除指定Comment id的评论"""
+    check_admin(request)
+    c = await Comment.find(id)
+    if c is None:
+        raise APIResourceNotFoundError('Comment')
+    await c.remove()
+    return dict(id=id)
 
 
 

@@ -36,7 +36,7 @@ async def auth_factory(app, handler):
     利用middleware在处理URL之前，把cookie解析出来，并将登陆用户绑定到request对象__user__属性上，这样后续的URL处理函数就可以直接拿到登陆用户
     """
     async def auth(request):
-        logging.info('check user: %s %s' % ( request.method, request.path))
+        logging.info('check user: %s %s' % (request.method, request.path))
         request.__user__ = None
         cookie_str = request.cookies.get(COOKIE_NAME)
         if cookie_str:
@@ -92,6 +92,7 @@ async def response_factory(app, handler):
                 resp.content_type = 'text/html;charset=utf-8'
                 return resp
             else:
+                r['__user__'] = request.__user__
                 resp = web.Response(body=app['__templating__'].get_template(template).render(**r).encode('utf-8'))  # 渲染模板内容
                 resp.content_type = 'text/html;charset=utf-8'
                 return resp

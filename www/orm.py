@@ -47,7 +47,7 @@ def log(sql, args=()):
     """
     输出SQL语句
     """
-    logging.debug('SQL: %s, args: %s' % (sql, args))
+    logging.info('SQL: %s, args: %s' % (sql, args))
 
 
 def create_args_string(num):
@@ -79,7 +79,7 @@ async def select(sql, args, size=None):
                 rs = await cur.fetchmany(size)
             else:
                 rs = await cur.fetchall()
-        logging.info('rows returned: %s' % len(rs))
+        logging.info('select -> rows returned: %s' % len(rs))
         return rs
 
 async def execute(sql, args, autocommit=True):
@@ -264,13 +264,14 @@ class Model(dict, metaclass=ModelMetaclass):
             sql.append('where')
             sql.append(where)
         if args is None:
-            args  = []
+            args = []
         orderBy = kwargs.get('orderBy', None)
         if orderBy:
             sql.append('order by')
             sql.append(orderBy)
         limit = kwargs.get('limit', None)
         if limit is not None:
+            sql.append('limit')
             if isinstance(limit, int):
                 sql.append('?')
                 args.append(limit)
@@ -282,13 +283,12 @@ class Model(dict, metaclass=ModelMetaclass):
         rs = await select(' '.join(sql), args)
         return [cls(**r) for r in rs]
 
-    # TODO: _num_的意思？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？
     @classmethod
     async def findNumber(cls, selectField, where=None, args=None):
         """
         find number by select and where.
         """
-        sql = ['select %s _num_ from `%s`' % (selectField, cls.__table__)]
+        sql = ['select %s _num_ from `%s`' % (selectField, cls.__table__)]  # 将列名重命名为_num_，省略了as
         if where:
             sql.append('where')
             sql.append(where)
